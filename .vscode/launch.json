@@ -1,0 +1,46 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+
+        {
+            "name": "Python: Remote Attach",
+            "type": "python",
+            "request": "attach",
+            "connect": {
+                "host": "localhost",
+                "port": 5678
+            },
+            "pathMappings": [
+                {
+                    "localRoot": "${workspaceFolder}",
+                    "remoteRoot": "${workspaceFolder}",
+                    ".": "${workspaceFolder}",
+                    "~": "${env:HOME}",
+                }
+            ],
+            "justMyCode": false
+        },
+        {
+            "name": "Python: Current File",
+            "type": "python",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "justMyCode": false
+        },
+        {
+            "name": "Activity worker",
+            "type": "python",
+            "request": "launch",
+            "module": "aws_step_activity",
+            "args": [
+                "--tb",
+                "--loglevel", "debug",
+                "-p", "amigos",
+                "-a", "Sam-MSI-worker",
+                "run"
+            ],
+            "justMyCode": false
+        }
+    ]
+}
