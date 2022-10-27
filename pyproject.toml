@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "streamlit-cognito-auth"
-version = "0.1.0"
+version = "1.0.0"
 description = "Convenient AWS Cognito Authentication/Authorization for Streamlit Apps"
 authors = [ "Sam McKelvie <dev@mckelvie.org>" ]
 license = "MIT"
