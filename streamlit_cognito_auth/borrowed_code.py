@@ -37,6 +37,9 @@ import base64
 import json
 import urllib.parse
 
+import logging
+logger = logging.Logger(__name__)
+
 def raw_get_user_tokens(
         auth_code: str,
         cognito_domain: str,
@@ -88,6 +91,9 @@ def raw_get_user_tokens(
   token_response = requests.post(token_url, headers=headers, data=body)
   token_response.raise_for_status()
   resp_obj = token_response.json()
+
+  logger.info(f"OAUTH2 token response={json.dumps(resp_obj, indent=2, sort_keys=2)}")
+
   access_token = resp_obj["access_token"]
   if not isinstance(access_token, str):
     raise TypeError("AWS Cognito token endpoint returned non-string access_token")
