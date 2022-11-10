@@ -3,7 +3,7 @@
 # MIT License - See LICENSE file accompanying this package.
 #
 
-from typing import Optional, Any, Tuple, List
+from typing import Optional, Any, Tuple, List, Dict
 from .internal_types import JsonableDict
 from .logging import logger
 import os
