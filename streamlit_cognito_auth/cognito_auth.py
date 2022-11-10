@@ -126,10 +126,19 @@ class CognitoAuth:
   def _set_session_var(self, name: str, val: Any) -> None:
     st.session_state[f"{self.cfg.session_state_var}_{name}"] = val
 
+  def _get_all_cookies(self) -> Dict[str, str]:
+    cookies_fetched = self._get_session_var('cookies_fetched')
+    if cookies_fetched is None:
+      self.cookie_manager.get_all()
+      self._set_session_var('cookies_fetched', '1')
+    return self.cookie_manager.cookies
+
   def _get_cookie(self, name: str) -> Optional[str]:
-    return self.cookie_manager.cookies.get(name, None)
+    cookies = self._get_all_cookies()
+    return cookies.get(name, None)
 
   def _set_cookie(self, name: str, val: Optional[str]) -> None:
+    self._get_all_cookies()
     if val is None:
       self.cookie_manager.delete(name)
     else:
