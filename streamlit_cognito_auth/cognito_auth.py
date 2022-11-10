@@ -54,7 +54,7 @@ class CognitoAuthConfig:
         logged_in_fmt: Optional[str] = "Logged in as {email}",
         in_sidebar: bool = True,
         session_state_var: str="cognito_auth",
-        expiration_grace_seconds: float=300,
+        expiration_grace_seconds: Optional[float]=None,
       ):
     logger.debug("CognitoAuthConfig: initializing")
     if cognito_domain is None or cognito_domain == "":
@@ -84,6 +84,8 @@ class CognitoAuthConfig:
     self.session_state_var = session_state_var
     if debug is None:
       debug = '://localhost' in app_uri
+    if expiration_grace_seconds is None:
+      expiration_grace_seconds = float(os.environ.get('ACCESS_TOKEN_EXPIRATION_GRACE_SECONDS', '300'))
     self.expiration_grace_seconds = expiration_grace_seconds
 
 class CognitoAuth:
