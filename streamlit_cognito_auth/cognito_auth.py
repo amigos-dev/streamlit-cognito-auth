@@ -9,22 +9,21 @@ from .logging import logger
 import os
 import sys
 import json
-
+import time
 
 import streamlit as st
-
+import extra_streamlit_components as stx
 
 from .borrowed_code import (
     raw_get_user_tokens,
+    raw_refresh_user_tokens,    
     raw_get_user_info,
-    raw_decode_id_token_payload,
+    raw_decode_token_payload,
     raw_get_login_link,
     raw_get_logout_link,
     raw_get_login_button_html,
     raw_get_logout_button_html,
   )
-
-from .logging import logger
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -40,6 +39,8 @@ class CognitoAuthConfig:
   logged_in_fmt: Optional[str]
   in_sidebar: bool = True
   debug: bool = False
+  cookie_manager: stx.CookieManager
+  expiration_grace_seconds: float
 
   def __init__(
         self,
@@ -53,6 +54,7 @@ class CognitoAuthConfig:
         logged_in_fmt: Optional[str] = "Logged in as {email}",
         in_sidebar: bool = True,
         session_state_var: str="cognito_auth",
+        expiration_grace_seconds: float=300,
       ):
     logger.debug("CognitoAuthConfig: initializing")
     if cognito_domain is None or cognito_domain == "":
@@ -82,20 +84,26 @@ class CognitoAuthConfig:
     self.session_state_var = session_state_var
     if debug is None:
       debug = '://localhost' in app_uri
+    self.expiration_grace_seconds = expiration_grace_seconds
 
 class CognitoAuth:
   cfg: CognitoAuthConfig
   login_uri: str
   logout_uri: str
+  cookie_manager: stx.CookieManager
 
   def __init__(
         self,
-        cfg: Optional[CognitoAuthConfig]=None
+        cfg: Optional[CognitoAuthConfig]=None,
+        cookie_manager: Optional[stx.CookieManager]=None,
       ):
     if cfg is None:
       cfg = CognitoAuthConfig()
     logger.debug("CognitoAuth: initializing")
     self.cfg = cfg
+    if cookie_manager is None:
+      cookie_manager = stx.CookieManager()
+    self.cookie_manager = cookie_manager
     self.login_uri = raw_get_login_link(
         cognito_domain=self.cognito_domain,
         client_id=self.client_id,
@@ -115,6 +123,27 @@ class CognitoAuth:
 
   def _set_session_var(self, name: str, val: Any) -> None:
     st.session_state[f"{self.cfg.session_state_var}_{name}"] = val
+
+  def _get_cookie(self, name: str) -> Optional[str]:
+    return self.cookie_manager.cookies.get(name, None)
+
+  def _set_cookie(self, name: str, val: Optional[str]) -> None:
+    if val is None:
+      self.cookie_manager.delete(name)
+    else:
+      self.cookie_manager.set(name, val)
+
+  @property
+  def persistent_refresh_token(self) -> Optional[str]:
+    return self._get_cookie('st_refresh_token')
+
+  @persistent_refresh_token.setter
+  def persistent_refresh_token(self, val: Optional[str]):
+    self._set_cookie('st_refresh_token', val)
+
+  @property
+  def expiration_grace_seconds(self) -> float:
+    return self.cfg.expiration_grace_seconds
 
   @property
   def cognito_domain(self) -> str:
@@ -150,7 +179,18 @@ class CognitoAuth:
       self._set_session_var('id_token', val)
       self._set_session_var('id_token_payload', None)
       self._set_session_var('cognito_groups', None)
-      self.set_user_info(None)
+      self.set_user_info(None)    
+
+  @property
+  def token_update_time(self) -> Optional[float]:
+    ts = self._get_session_var('token_update_time')
+    if not ts is None:
+      ts = float(ts)
+    return ts
+
+  @token_update_time.setter
+  def token_update_time(self, val: Optional[float]):
+    self._set_session_var('token_update_time', None if val is None else str(val))
 
   @property
   def access_token(self) -> Optional[str]:
@@ -158,7 +198,17 @@ class CognitoAuth:
 
   @access_token.setter
   def access_token(self, val: Optional[str]):
-    self._set_session_var('access_token', val)
+    if val != self.access_token:
+      self._set_session_var('access_token', val)
+      self._set_session_var('access_token_payload', None)
+
+  @property
+  def refresh_token(self) -> Optional[str]:
+    return self._get_session_var('refresh_token')
+
+  @refresh_token.setter
+  def refresh_token(self, val: Optional[str]):
+    self._set_session_var('refresh_token', val)
 
   @property
   def auth_code(self) -> Optional[str]:
@@ -174,9 +224,39 @@ class CognitoAuth:
     if result is None:
       id_token = self.id_token
       if not id_token is None:
-        result = raw_decode_id_token_payload(id_token)
+        result = raw_decode_token_payload(id_token)
         self._set_session_var('id_token_payload', result)
     return result
+
+  @property
+  def access_token_payload(self) -> Optional[JsonableDict]:
+    result = self._get_session_var('access_token_payload')
+    if result is None:
+      access_token = self.access_token
+      if not access_token is None:
+        result = raw_decode_token_payload(access_token)
+        self._set_session_var('access_token_payload', result)
+    return result
+
+  def get_token_remaining_seconds(self, payload: Optional[JsonableDict], update_time: Optional[float]=None) -> float:
+    result: float = 0.0
+    if not payload is None:
+      exp_time = payload.get('exp', None)
+      auth_time =payload.get('exp', None)
+      if not exp_time is None:
+        auth_time = payload.get('auth_time', update_time)
+        if update_time is None:
+          update_time = auth_time
+        # adjust for clock skew
+        exp_time += (update_time - auth_time)
+        result = max(0.0, exp_time - time.time())
+    return result
+
+  def get_access_token_remaining_seconds(self) -> float:
+    return self.get_token_remaining_seconds(self.access_token_payload, update_time=self.token_update_time)
+
+  def get_id_token_remaining_seconds(self) -> float:
+    return self.get_token_remaining_seconds(self.id_token_payload, update_time=self.token_update_time)
 
   @property
   def cognito_groups(self) -> List[str]:
@@ -211,6 +291,8 @@ class CognitoAuth:
     self.id_token = None
     self.access_token = None
     self.auth_code = None
+    self.refresh_token = None
+    self.token_update_time = None
     self.set_user_info(None)
 
   def update_session_from_auth_code(self, auth_code: str) -> 'CognitoAuth':
@@ -219,17 +301,57 @@ class CognitoAuth:
     else:
       logger.debug(f"CognitoAuth: updating session from auth_code={auth_code}")
       self.clear_login_state()
-      access_token, id_token = raw_get_user_tokens(
+      token_update_time = time.time()
+      resp_obj = raw_get_user_tokens(
           auth_code=auth_code,
           cognito_domain=self.cognito_domain,
           client_id=self.client_id,
           redirect_uri=self.app_uri,
           client_secret=self.client_secret
         )
-      logger.debug(f"CognitoAuth: Login successful; updated access_token and id_token")
+      access_token = resp_obj["access_token"]
+      if not isinstance(access_token, str):
+        raise TypeError("AWS Cognito token endpoint returned non-string access_token")
+      id_token = resp_obj["id_token"]
+      if not isinstance(id_token, str):
+        raise TypeError("AWS Cognito token endpoint returned non-string id_token")
+      refresh_token = resp_obj.get("refresh_token", None)
+      if not refresh_token is None and not isinstance(refresh_token, str):
+        raise TypeError("AWS Cognito token endpoint returned non-string refresh_token")
+
+      self.token_update_time = token_update_time
       self.access_token = access_token
       self.id_token = id_token
+      self.refresh_token = refresh_token
+      self.persistent_refresh_token = refresh_token
       self.auth_code = auth_code
+      logger.debug(f"CognitoAuth: Login successful; updated access_token and id_token{'' if refresh_token is None else ' and refresh_token'}")
+    return self
+
+  def update_session_from_refresh_token(self) -> 'CognitoAuth':
+    logger.debug(f"CognitoAuth: updating session from refresh token")
+    refresh_token = self.refresh_token
+    token_update_time = time.time()
+    self.clear_login_state()
+    resp_obj: Optional[JsonableDict] = None
+    try:
+      resp_obj = raw_refresh_user_tokens(
+          refresh_token=refresh_token,
+          cognito_domain=self.cognito_domain,
+          client_id=self.client_id,
+          client_secret=self.client_secret
+        )
+    except Exception as e:
+      logger.info(f"Failed refreshing credentials from refresh token: {e}")
+    if not resp_obj is None:
+      access_token = resp_obj["access_token"]
+      if not isinstance(access_token, str):
+        raise TypeError("AWS Cognito token endpoint refresh returned non-string access_token")
+      id_token = resp_obj["id_token"]
+      if not isinstance(id_token, str):
+        raise TypeError("AWS Cognito token endpoint returned non-string id_token")
+      self.refresh_token = refresh_token
+      logger.debug(f"CognitoAuth: Credential refresh successful; updated access_token and id_token")
     return self
 
   def get_and_clear_query_param_logout_code(self) -> bool:
@@ -255,11 +377,19 @@ class CognitoAuth:
     logger.debug("CognitoAuth: updating")
     if self.get_and_clear_query_param_logout_code():
       logger.debug("CognitoAuth: got action=logout queryparam; clearing login state")
+      self.persistent_refresh_token = None
       self.clear_login_state()
     auth_code = self.get_and_clear_query_param_auth_code()
     if not auth_code is None:
       logger.debug("CognitoAuth: got code queryparam; updating login state")
       self.update_session_from_auth_code(auth_code)
+    else:
+      if (self.get_access_token_remaining_seconds() < self.expiration_grace_seconds or
+          self.get_id_token_remaining_seconds() < self.expiration_grace_seconds):
+        if self.refresh_token is None:
+          self.refresh_token = self.persistent_refresh_token
+        if not self.refresh_token is None:
+          self.update_session_from_refresh_token()
     #logger.debug(f"CognitoAuth: done updating, id_token_payload={json.dumps(self.id_token_payload, sort_keys=True)}")
     return self
 

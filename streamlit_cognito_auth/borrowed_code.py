@@ -40,13 +40,68 @@ import urllib.parse
 import logging
 logger = logging.Logger(__name__)
 
+def raw_refresh_user_tokens(
+        refresh_token: str,
+        cognito_domain: str,
+        client_id: str,
+        client_secret: Optional[str]=None
+    ) -> JsonableDict:
+  """Given a new auth code, call AWS Cognito to generate the access token and ID token.
+
+  Args:
+      refresh_token (str):
+          A refresh token as previously returned from raw_get_user_tokens.
+      cognito_domain (str):
+          The AWS Cognito User Pool endpoint URI; e.g.,
+             "https://<user-pool-domain-prefix>.auth.<aws-region>.amazoncognito.com"
+      client_id (str):
+          The AWS Cognito Application Client ID used by this app
+      client_secret (Optional[str], optional):
+          The AWS Cognito Application Client Secret associate with
+          client_id, or None if there is no secret for this application client.
+          Defaults to None.
+
+  Returns:
+      JsonableDict similar to:
+      {
+        "access_token": "<access-token>",
+        "expires_in": <secinds-to-access-token-expiration>,
+        "id_token": <id-token>,
+        "refresh_token": "<refresh-token>",
+        "token-type": "Bearer"
+      }
+  """
+  token_url = f"{cognito_domain}/oauth2/token"
+  headers = {
+      "Content-Type": "application/x-www-form-urlencoded",
+    }
+  if not client_secret is None and client_secret != '':
+    client_secret_string = f"{client_id}:{client_secret}"
+    client_secret_encoded = str(
+        base64.b64encode(client_secret_string.encode("utf-8")), "utf-8"
+      )
+    headers["Authorization"] = f"Basic {client_secret_encoded}"
+  body = {
+      "grant_type": "refresh_token",
+      "client_id": client_id,
+      "refresh_token": refresh_token,
+    }
+
+  token_response = requests.post(token_url, headers=headers, data=body)
+  token_response.raise_for_status()
+  resp_obj = token_response.json()
+
+  logger.info(f"OAUTH2 refresh token flow token response={json.dumps(resp_obj, indent=2, sort_keys=2)}")
+  return resp_obj
+
+
 def raw_get_user_tokens(
         auth_code: str,
         cognito_domain: str,
         client_id: str,
         redirect_uri: str,
         client_secret: Optional[str]=None
-    ) -> Tuple[str, str]:
+    ) -> JsonableDict:
   """Given a new auth code, call AWS Cognito to generate the access token and ID token.
 
   Args:
@@ -67,9 +122,14 @@ def raw_get_user_tokens(
           Defaults to None.
 
   Returns:
-      Tuple[str, str]: tuple containing
-          - access_token: A session access token
-          - id_token: A session ID token
+      JsonableDict similar to:
+      {
+        "access_token": "<access-token>",
+        "expires_in": <secinds-to-access-token-expiration>,
+        "id_token": <id-token>,
+        "refresh_token": "<refresh-token>",
+        "token-type": "Bearer"
+      }
   """
   token_url = f"{cognito_domain}/oauth2/token"
   headers = {
@@ -92,16 +152,9 @@ def raw_get_user_tokens(
   token_response.raise_for_status()
   resp_obj = token_response.json()
 
-  logger.info(f"OAUTH2 token response={json.dumps(resp_obj, indent=2, sort_keys=2)}")
+  logger.info(f"OAUTH2 auth code flow token response={json.dumps(resp_obj, indent=2, sort_keys=2)}")
+  return resp_obj
 
-  access_token = resp_obj["access_token"]
-  if not isinstance(access_token, str):
-    raise TypeError("AWS Cognito token endpoint returned non-string access_token")
-  id_token = resp_obj["id_token"]
-  if not isinstance(id_token, str):
-    raise TypeError("AWS Cognito token endpoint returned non-string id_token")
-
-  return access_token, id_token
 
 def raw_get_user_info(access_token: str, cognito_domain: str) -> JsonableDict:
   """Get logged-in user info from AWS Cognito
@@ -147,29 +200,28 @@ def _pad_base64(data: str) -> str:
     data += "=" * (4 - missing_padding)
   return data
 
-def raw_decode_id_token_payload(id_token: str) -> JsonableDict:
-  """Decode the payload of an AWS Cognito ID token
+def raw_decode_token_payload(token: str) -> JsonableDict:
+  """Decode the payload of an AWS Cognito ID or ACCESS token
 
   Args:
-      id_token (str): An ID token string as provided by AWS Cognito token endpoint
+      token (str): An ID or ACCESS token string as provided by AWS Cognito token endpoint
 
   Returns:
       JsonableDict:
-          A deserialized JSON dict containing the payload of the ID token
+          A deserialized JSON dict containing the payload of the ID or ACCESS token
   """
   try:
-    _header, payload, _signature = id_token.split(".")
+    _header, payload, _signature = token.split(".")
 
     payload_json = base64.urlsafe_b64decode(_pad_base64(payload))
     payload: JsonableDict = json.loads(payload_json)
 
     if not isinstance(payload, dict):
-      raise TypeError("AWS Cognito ID token payload is not a dict")
+      raise TypeError("AWS Cognito token payload is not a dict")
   except Exception as e:
-    raise ValueError("Invalid ID token") from e
+    raise ValueError("Invalid ID or ACCESS token") from e
 
   return payload
-
 
 def raw_get_login_link(
       cognito_domain: str,
