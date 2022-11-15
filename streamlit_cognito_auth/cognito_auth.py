@@ -3,7 +3,7 @@
 # MIT License - See LICENSE file accompanying this package.
 #
 
-from typing import Optional, Any, Tuple, List, Dict
+from typing import Optional, Any, Tuple, List, Dict, Callable
 from .internal_types import JsonableDict
 from .logging import logger
 import os
@@ -12,7 +12,8 @@ import json
 import time
 
 import streamlit as st
-import extra_streamlit_components as stx
+from streamlit_cookies_manager import EncryptedCookieManager
+from streamlit.runtime.scriptrunner import get_script_run_ctx as _get_script_run_ctx
 
 from .borrowed_code import (
     raw_get_user_tokens,
@@ -25,8 +26,9 @@ from .borrowed_code import (
     raw_get_logout_button_html,
   )
 
-from dotenv import load_dotenv
-load_dotenv()
+from dotenv import load_dotenv, find_dotenv
+load_dotenv(dotenv_path=find_dotenv(usecwd=True))
+logger.info(f"CognitoAuth: ENVIRONMENT= {json.dumps(dict(os.environ), indent=2, sort_keys=True)}")
 
 class CognitoAuthConfig:
   session_state_var: str = "cognito_auth"
@@ -39,8 +41,9 @@ class CognitoAuthConfig:
   logged_in_fmt: Optional[str]
   in_sidebar: bool = True
   debug: bool = False
-  cookie_manager: stx.CookieManager
   expiration_grace_seconds: float
+  cookie_passphrase: str
+  cookie_prefix: str
 
   def __init__(
         self,
@@ -55,6 +58,8 @@ class CognitoAuthConfig:
         in_sidebar: bool = True,
         session_state_var: str="cognito_auth",
         expiration_grace_seconds: Optional[float]=None,
+        cookie_passphrase: Optional[str]=None,
+        cookie_prefix: Optional[str]=None,
       ):
     logger.debug("CognitoAuthConfig: initializing")
     if cognito_domain is None or cognito_domain == "":
@@ -87,25 +92,33 @@ class CognitoAuthConfig:
     if expiration_grace_seconds is None:
       expiration_grace_seconds = float(os.environ.get('ACCESS_TOKEN_EXPIRATION_GRACE_SECONDS', '300'))
     self.expiration_grace_seconds = expiration_grace_seconds
+    if cookie_passphrase is None:
+      cookie_passphrase = os.environ.get('COOKIE_PASSPHRASE', self.client_secret)
+      if cookie_passphrase is None:
+        cookie_passphrase = "Not very secret"
+    self.cookie_passphrase = cookie_passphrase
+    if cookie_prefix is None:
+      cookie_prefix = "amigos.dev/streamlit-cognito-auth/"
+    self.cookie_prefix = cookie_prefix
+    x = EncryptedCookieManager
 
-class CognitoAuth:
+class CognitoAuthApp:
   cfg: CognitoAuthConfig
   login_uri: str
   logout_uri: str
-  cookie_manager: stx.CookieManager
 
   def __init__(
         self,
         cfg: Optional[CognitoAuthConfig]=None,
-        cookie_manager: Optional[stx.CookieManager]=None,
+        #cookie_manager: Optional[stx.CookieManager]=None,
       ):
     if cfg is None:
       cfg = CognitoAuthConfig()
     logger.debug("CognitoAuth: initializing")
     self.cfg = cfg
-    if cookie_manager is None:
-      cookie_manager = stx.CookieManager()
-    self.cookie_manager = cookie_manager
+    #if cookie_manager is None:
+    #  cookie_manager = stx.CookieManager()
+    #self.cookie_manager = cookie_manager
     self.login_uri = raw_get_login_link(
         cognito_domain=self.cognito_domain,
         client_id=self.client_id,
@@ -120,37 +133,159 @@ class CognitoAuth:
     logger.info(f'CognitoAuth: Login URI="{self.login_uri}"')
     logger.info(f'CognitoAuth: Logout URI="{self.logout_uri}"')
 
+  @property
+  def expiration_grace_seconds(self) -> float:
+    return self.cfg.expiration_grace_seconds
+
+  @property
+  def cognito_domain(self) -> str:
+    return self.cfg.cognito_domain
+
+  @property
+  def client_id(self) -> str:
+    return self.cfg.client_id
+
+  @property
+  def client_secret(self) -> Optional[str]:
+    return self.cfg.client_secret
+
+  @property
+  def app_uri(self) -> str:
+    return self.cfg.app_uri
+
+  @property
+  def html_css_login(self) -> Optional[str]:
+    return self.cfg.html_css_login
+
+  @property
+  def html_css_logout(self) -> Optional[str]:
+    return self.cfg.html_css_logout
+
+
+CognitoAuthConfigCreator = Callable[[], CognitoAuthConfig]
+
+_global_cognito_auth_app: Optional[CognitoAuthApp] = None
+def cognito_auth_app(config_creator: Optional[CognitoAuthConfigCreator]=None) -> CognitoAuthApp:
+  global _global_cognito_auth_app
+  result = _global_cognito_auth_app
+  if result is None:
+    if config_creator is None:
+      config_creator = lambda: CognitoAuthConfig()
+    elif isinstance(config_creator, CognitoAuthConfig):
+      config_creator = lambda: config_creator
+    cfg = config_creator()
+    result = CognitoAuthApp(cfg)
+    _global_cognito_auth = result
+  return result
+
+class CognitoAuth:
+  app: CognitoAuthApp
+  _cookie_manager: Optional[EncryptedCookieManager] = None
+  _cookies: Optional[Dict[str, str]] = None
+
+  def __init__(
+        self,
+        app: CognitoAuthApp,
+      ):
+    self.app = app
+
+  @property
+  def login_uri(self) -> str:
+    return self.app.login_uri
+
+  @property
+  def logout_uri(self) -> str:
+    return self.app.logout_uri
+
+  @property
+  def cfg(self) -> CognitoAuthConfig:
+    return self.app.cfg
+
+  @property
+  def session_state_obj(self) -> Dict[str, Any]:
+    result = st.session_state.get(self.cfg.session_state_var)
+    if result is None:
+      result = {}
+      st.session_state[self.cfg.session_state_var] = result
+    return result
+
   def _get_session_var(self, name: str, default: Any=None) -> Any:
-    return st.session_state.get(f"{self.cfg.session_state_var}_{name}", default)
+    return self.session_state_obj.get(name, default)
 
   def _set_session_var(self, name: str, val: Any) -> None:
-    st.session_state[f"{self.cfg.session_state_var}_{name}"] = val
+    self.session_state_obj[name] = val
 
-  def _get_all_cookies(self) -> Dict[str, str]:
-    cookies_fetched = self._get_session_var('cookies_fetched')
-    if cookies_fetched is None:
-      self.cookie_manager.get_all()
-      self._set_session_var('cookies_fetched', '1')
-    return self.cookie_manager.cookies
+  @property
+  def cookie_manager(self) -> EncryptedCookieManager:
+    if self._cookie_manager is None:
+      self._cookie_manager = EncryptedCookieManager(
+          prefix=self.cfg.cookie_prefix,
+          password=self.cfg.cookie_passphrase
+      )
+    return self._cookie_manager
 
-  def _get_cookie(self, name: str) -> Optional[str]:
-    cookies = self._get_all_cookies()
-    return cookies.get(name, None)
+  def ready_cookie_manager(self) -> EncryptedCookieManager:
+    cookie_manager = self.cookie_manager
+    if not cookie_manager.ready():
+      logger.debug("CognitoAuth: Rudely stopping script to wait for ready cookies...")
+      st.stop()
+    return cookie_manager
 
-  def _set_cookie(self, name: str, val: Optional[str]) -> None:
-    self._get_all_cookies()
+  def ready_cookies(self) -> Dict[str, str]:
+    if self._cookies is None:
+      cookie_manager = self.ready_cookie_manager()
+      self._cookies = dict(cookie_manager)
+    return self._cookies
+
+  def get_cookie(self, name: str) -> Optional[str]:
+    cookies = self.ready_cookies()
+    result = cookies.get(name, None)
+    logger.debug(f"CognitoAuth: Fetched cookie '{name}' ==> {json.dumps(result)}")
+    return result
+
+  def save_cookies(self) -> None:
+    self.ready_cookie_manager().save()
+
+  def set_cookie(self, name: str, val: Optional[str], sync: bool=False) -> bool:
+    cookies = self.ready_cookies()
+    cookie_manager = self._cookie_manager
+    changed = False
     if val is None:
-      self.cookie_manager.delete(name)
+      if name in cookies:
+        logger.debug(f"CognitoAuth: Deleting cookie '{name}'")
+        del cookies[name]
+        del cookie_manager[name]
+        changed = True
     else:
-      self.cookie_manager.set(name, val)
+      if not name in cookies or cookies[name] != val:
+        logger.debug(f"CognitoAuth: Setting cookie '{name}'={json.dumps(val)}")
+        cookies[name] = val
+        cookie_manager[name] = val
+        changed = True
+    if sync and changed:
+      logger.debug("CognitoAuth: Saving cookies")
+      cookie_manager.save()
+    return changed
+
+  @property
+  def id_token(self) -> Optional[str]:
+    return self._get_session_var('id_token')
+
+  @id_token.setter
+  def id_token(self, val: Optional[str]):
+    if val != self.id_token:
+      self._set_session_var('id_token', val)
+      self._set_session_var('id_token_payload', None)
+      self._set_session_var('cognito_groups', None)
+      self.set_user_info(None)    
 
   @property
   def persistent_refresh_token(self) -> Optional[str]:
-    return self._get_cookie('st_refresh_token')
+    return self.get_cookie('st_refresh_token')
 
   @persistent_refresh_token.setter
   def persistent_refresh_token(self, val: Optional[str]):
-    self._set_cookie('st_refresh_token', val)
+    self.set_cookie('st_refresh_token', val, sync=True)
 
   @property
   def expiration_grace_seconds(self) -> float:
@@ -361,7 +496,8 @@ class CognitoAuth:
       id_token = resp_obj["id_token"]
       if not isinstance(id_token, str):
         raise TypeError("AWS Cognito token endpoint returned non-string id_token")
-      self.refresh_token = refresh_token
+      self.access_token = access_token
+      self.id_token = id_token
       logger.debug(f"CognitoAuth: Credential refresh successful; updated access_token and id_token")
     return self
 
@@ -386,6 +522,7 @@ class CognitoAuth:
 
   def update(self) -> 'CognitoAuth':
     logger.debug("CognitoAuth: updating")
+    self.ready_cookies()
     if self.get_and_clear_query_param_logout_code():
       logger.debug("CognitoAuth: got action=logout queryparam; clearing login state")
       self.persistent_refresh_token = None
@@ -395,12 +532,20 @@ class CognitoAuth:
       logger.debug("CognitoAuth: got code queryparam; updating login state")
       self.update_session_from_auth_code(auth_code)
     else:
-      if (self.get_access_token_remaining_seconds() < self.expiration_grace_seconds or
-          self.get_id_token_remaining_seconds() < self.expiration_grace_seconds):
+      if (self.get_access_token_remaining_seconds() <= self.expiration_grace_seconds or
+          self.get_id_token_remaining_seconds() <= self.expiration_grace_seconds):
+        logger.debug("CognitoAuth: Access or ID token missing or expired")
         if self.refresh_token is None:
           self.refresh_token = self.persistent_refresh_token
+          if self.refresh_token is None:
+            logger.debug("CognitoAuth: No persistent refresh token cookie exists, cannot refresh tokens")
+          else:
+            logger.debug("CognitoAuth: Retrieved persistent refresh token from cookie")
+
         if not self.refresh_token is None:
           self.update_session_from_refresh_token()
+      else:
+        logger.debug(f"CognitoAuth: Access and ID tokens are still valid for more than {self.expiration_grace_seconds} seconds")
     #logger.debug(f"CognitoAuth: done updating, id_token_payload={json.dumps(self.id_token_payload, sort_keys=True)}")
     return self
 
@@ -530,16 +675,9 @@ class CognitoAuth:
       st.stop()
     return email
 
-_global_cognito_auth: Optional[CognitoAuth] = None
-def cognito_auth(config_creator=None) -> CognitoAuth:
-  global _global_cognito_auth
-  result = _global_cognito_auth
-  if result is None:
-    if config_creator is None:
-      config_creator = lambda: CognitoAuthConfig()
-    elif isinstance(config_creator, CognitoAuthConfig):
-      config_creator = lambda: config_creator
-    cfg = config_creator()
-    result = CognitoAuth(cfg)
-    _global_cognito_auth = result
+
+
+def cognito_auth(config_creator: Optional[CognitoAuthConfigCreator]=None) -> CognitoAuth:
+  app = cognito_auth_app(config_creator=config_creator)
+  result = CognitoAuth(app)
   return result
