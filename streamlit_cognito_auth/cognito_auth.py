@@ -30,6 +30,8 @@ from dotenv import load_dotenv, find_dotenv
 load_dotenv(dotenv_path=find_dotenv(usecwd=True))
 logger.info("CognitoAuth: package streamlit_cognito_auth loading")
 
+LOGOUT_REQUIRES_NAVIGATE = False
+
 class CognitoAuthConfig:
   session_state_var: str = "cognito_auth"
   cognito_domain: str
@@ -623,7 +625,7 @@ class CognitoAuth:
     if self.window_navigate_is_prohibited:
       if st_target.button('Log In'):
         st.warning(f'Login is not seamlessly supported on this host because the streamlit app is running in an iframe. '
-                   f'To login, copy and paste this link into your browser address bar:\n\n{self.login_uri}')
+                   f'To login, click on this link or copy and paste this link into your browser address bar:\n\n{self.login_uri}')
     else:
       st_target.markdown(self.get_login_button_html(), unsafe_allow_html=True)
 
@@ -636,7 +638,7 @@ class CognitoAuth:
         logged_in_msg = self.cfg.logged_in_fmt.format(email=email)
         #logger.debug(f"Writing logged_in_msg: {logged_in_msg}")
         st_target.write(logged_in_msg)
-    if self.window_navigate_is_prohibited:
+    if self.window_navigate_is_prohibited and LOGOUT_REQUIRES_NAVIGATE:
       if st_target.button('Log Out'):
         st.warning(f'Logout is not seamlessly supported on this host because the streamlit app is running in an iframe. '
                    f'To login, copy and paste this link into your browser address bar:\n\n{self.logout_uri}')
