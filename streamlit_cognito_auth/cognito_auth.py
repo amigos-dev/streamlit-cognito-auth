@@ -104,9 +104,9 @@ class CognitoAuthConfig:
       cookie_prefix = "amigos.dev/streamlit-cognito-auth/"
     self.cookie_prefix = cookie_prefix
     if window_navigate_is_prohibited is None:
-      window_navigate_is_prohibited_str = os.environ.get('WINDOW_NAVIGATE_IS_PROHIBITED', '')
-      if window_navigate_is_prohibited_str != '':
-        window_navigate_is_prohibited = True
+      window_navigate_is_prohibited_str = os.environ.get('WINDOW_NAVIGATE_IS_PROHIBITED', None)
+      if not window_navigate_is_prohibited_str is None:
+        window_navigate_is_prohibited = not window_navigate_is_prohibited_str.lower() in ('', '0', 'f', 'false', 'no', 'n', 'off')
       else:
         window_navigate_is_prohibited = '.streamlitapp.com/' in app_uri or '.streamlit.app/' in app_uri
     self.window_navigate_is_prohibited = window_navigate_is_prohibited
