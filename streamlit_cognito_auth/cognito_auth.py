@@ -28,7 +28,7 @@ from .borrowed_code import (
 
 from dotenv import load_dotenv, find_dotenv
 load_dotenv(dotenv_path=find_dotenv(usecwd=True))
-#logger.info(f"CognitoAuth: ENVIRONMENT= {json.dumps(dict(os.environ), indent=2, sort_keys=True)}")
+logger.info("CognitoAuth: package streamlit_cognito_auth loading")
 
 class CognitoAuthConfig:
   session_state_var: str = "cognito_auth"
@@ -187,7 +187,7 @@ def cognito_auth_app(config_creator: Optional[CognitoAuthConfigCreator]=None) ->
       config_creator = lambda: config_creator
     cfg = config_creator()
     result = CognitoAuthApp(cfg)
-    _global_cognito_auth = result
+    _global_cognito_auth_app = result
   return result
 
 class CognitoAuth:
@@ -266,6 +266,7 @@ class CognitoAuth:
       if name in cookies:
         logger.debug(f"CognitoAuth: Deleting cookie '{name}'")
         del cookies[name]
+        cookie_manager[name] = ''
         del cookie_manager[name]
         changed = True
     else:
@@ -293,7 +294,10 @@ class CognitoAuth:
 
   @property
   def persistent_refresh_token(self) -> Optional[str]:
-    return self.get_cookie('st_refresh_token')
+    result = self.get_cookie('st_refresh_token')
+    if not result is None and result == '':
+      result = None
+    return result
 
   @persistent_refresh_token.setter
   def persistent_refresh_token(self, val: Optional[str]):
