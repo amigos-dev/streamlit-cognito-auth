@@ -28,7 +28,7 @@ from .borrowed_code import (
 
 from dotenv import load_dotenv, find_dotenv
 load_dotenv(dotenv_path=find_dotenv(usecwd=True))
-logger.info(f"CognitoAuth: ENVIRONMENT= {json.dumps(dict(os.environ), indent=2, sort_keys=True)}")
+#logger.info(f"CognitoAuth: ENVIRONMENT= {json.dumps(dict(os.environ), indent=2, sort_keys=True)}")
 
 class CognitoAuthConfig:
   session_state_var: str = "cognito_auth"
@@ -44,6 +44,8 @@ class CognitoAuthConfig:
   expiration_grace_seconds: float
   cookie_passphrase: str
   cookie_prefix: str
+  window_navigate_is_prohibited: bool
+
 
   def __init__(
         self,
@@ -60,6 +62,7 @@ class CognitoAuthConfig:
         expiration_grace_seconds: Optional[float]=None,
         cookie_passphrase: Optional[str]=None,
         cookie_prefix: Optional[str]=None,
+        window_navigate_is_prohibited: Optional[bool]=None,
       ):
     logger.debug("CognitoAuthConfig: initializing")
     if cognito_domain is None or cognito_domain == "":
@@ -100,7 +103,16 @@ class CognitoAuthConfig:
     if cookie_prefix is None:
       cookie_prefix = "amigos.dev/streamlit-cognito-auth/"
     self.cookie_prefix = cookie_prefix
-    x = EncryptedCookieManager
+    if window_navigate_is_prohibited is None:
+      window_navigate_is_prohibited_str = os.environ.get('WINDOW_NAVIGATE_IS_PROHIBITED', '')
+      if window_navigate_is_prohibited_str != '':
+        window_navigate_is_prohibited = True
+      else:
+        window_navigate_is_prohibited = '.streamlitapp.com/' in app_uri or '.streamlit.app/' in app_uri
+    self.window_navigate_is_prohibited = window_navigate_is_prohibited
+    summary: JsonableDict = dict(self.__dict__)
+    summary.update(client_secret="<secret>", cookie_passphrase="<secret>")
+    logger.info(f"CognitoAuth: Config = {json.dumps(summary, indent=2, sort_keys=True)}")
 
 class CognitoAuthApp:
   cfg: CognitoAuthConfig
@@ -600,7 +612,7 @@ class CognitoAuth:
 
   @property
   def window_navigate_is_prohibited(self) -> bool:
-    return '.streamlitapp.com/' in self.app_uri
+    return self.cfg.window_navigate_is_prohibited
 
   def login_button(self):
     st_target = st.sidebar if self.cfg.in_sidebar else st
@@ -636,7 +648,14 @@ class CognitoAuth:
   def require_authenticated(self) -> str:
     email = self.user_email
     if email is None:
-      st.error('You are not logged in; please click on the "Log In" button to proceed')
+      if self.window_navigate_is_prohibited:
+        st.error(
+            f'You are not logged in. Login is not seamlessly supported on this host because the streamlit '
+            f'app is running in a restricted iframe. '
+            f'To login, copy and paste this link into your browser address bar:\n\n{self.login_uri}'
+          )
+      else:
+        st.error('You are not logged in; please click on the "Log In" button to proceed.')
       st.stop()
     return email
 
