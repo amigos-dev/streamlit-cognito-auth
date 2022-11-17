@@ -641,7 +641,7 @@ class CognitoAuth:
     if self.window_navigate_is_prohibited and LOGOUT_REQUIRES_NAVIGATE:
       if st_target.button('Log Out'):
         st.warning(f'Logout is not seamlessly supported on this host because the streamlit app is running in an iframe. '
-                   f'To login, copy and paste this link into your browser address bar:\n\n{self.logout_uri}')
+                   f'To logout, copy and paste this link into your browser address bar:\n\n{self.logout_uri}')
     else:
       st_target.markdown(self.get_logout_button_html(), unsafe_allow_html=True)
 
@@ -658,7 +658,7 @@ class CognitoAuth:
         st.error(
             f'You are not logged in. Login is not seamlessly supported on this host because the streamlit '
             f'app is running in a restricted iframe. '
-            f'To login, copy and paste this link into your browser address bar:\n\n{self.login_uri}'
+            f'To login, click on this link or copy and paste this link into your browser address bar:\n\n{self.login_uri}'
           )
       else:
         st.error('You are not logged in; please click on the "Log In" button to proceed.')
